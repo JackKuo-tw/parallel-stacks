@@ -3,7 +3,7 @@
   "displayName": "Parallel Stacks",
   "description": "Show parallel stacks in a graph view for C/C++ debugging.",
   "version": "0.0.1",
-  "publisher": "JackKuo-tw",
+  "publisher": "JackKuo",
   "icon": "resources/icon.png",
   "license": "MIT",
   "author": "JackKuo-tw",
