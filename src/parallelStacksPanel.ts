@@ -379,7 +379,7 @@ export class ParallelStacksPanel {
                     .attr('text-anchor', 'middle')
                     .text(d => {
                          const src = d.data.frame.source ? d.data.frame.source.name : '';
-                         const line = d.data.frame.line > 0 ? ':' + d.data.frame.line : '';
+                         const line = d.data.frame.line > 0 ? ' : ' + d.data.frame.line : '';
                          return src + line;
                     });
 
@@ -394,8 +394,8 @@ export class ParallelStacksPanel {
 
                 badges.append('text')
                     .attr('class', 'node-thread-count')
-                    .attr('cx', nodeWidth/2)
-                    .attr('cy', -nodeHeight/2)
+                    .attr('x', nodeWidth/2)
+                    .attr('y', -nodeHeight/2)
                     .attr('dy', '0.35em')
                     .attr('text-anchor', 'middle')
                     .text(d => d.data.threadIds.length);
