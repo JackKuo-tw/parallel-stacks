@@ -15,6 +15,7 @@ export interface GraphNode {
     frame: StackFrame;
     children: GraphNode[];
     threadIds: number[]; // Threads that pass through this node
+    threadNames: string[]; // Names of threads that pass through this node
     // For rendering
     x?: number;
     y?: number;
@@ -123,7 +124,8 @@ export function buildGraph(threadsData: ThreadData[], splitNodes: string[] = [])
                         threadIds: []
                     },
                     children: [],
-                    threadIds: [] // Will add below
+                    threadIds: [],
+                    threadNames: []
                 };
                 currentLevelNodes.push(node);
             }
@@ -131,6 +133,7 @@ export function buildGraph(threadsData: ThreadData[], splitNodes: string[] = [])
             // Add thread ID to node
             if (!node.threadIds.includes(thread.id)) {
                 node.threadIds.push(thread.id);
+                node.threadNames.push(thread.name);
             }
             if (!node.frame.threadIds.includes(thread.id)) {
                 node.frame.threadIds.push(thread.id);

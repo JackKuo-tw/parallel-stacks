@@ -185,6 +185,16 @@ export class ParallelStacksPanel {
                 stroke: var(--vscode-focusBorder);
                 stroke-width: 2px;
             }
+            .node-thread-label-rect {
+                fill: var(--vscode-badge-background);
+                rx: 3px;
+                opacity: 0.8;
+            }
+            .node-thread-label-text {
+                font-size: 10px;
+                fill: var(--vscode-badge-foreground);
+                font-weight: normal;
+            }
 
             /* Links */
             .link {
@@ -500,6 +510,44 @@ export class ParallelStacksPanel {
                              return '';
                          }
                     });
+
+                // Gutter labels for threads at the TOP of branches (leaves)
+                const leaves = nodes.filter(d => !d.children || d.children.length === 0);
+
+                leaves.each(function(d) {
+                    const leaf = d3.select(this);
+                    const threads = d.data.threadIds.map((id, i) => {
+                        const name = d.data.threadNames[i] || 'Thread';
+                        return id + ': ' + name;
+                    });
+
+                    const labelGroup = leaf.append('g')
+                        .attr('class', 'node-thread-label-group')
+                        .style('pointer-events', 'none')
+                        .attr('transform', 'translate(0, ' + (-nodeHeight / 2 - 10) + ')');
+
+                    // Render each thread label stacked vertically
+                    threads.forEach((txt, i) => {
+                        const yOffset = -i * 15;
+                        const text = labelGroup.append('text')
+                            .attr('class', 'node-thread-label-text')
+                            .attr('text-anchor', 'middle')
+                            .attr('y', yOffset)
+                            .text(txt);
+
+                        // Add background rect for readability
+                        const node = text.node();
+                        if (node) {
+                            const bbox = node.getBBox();
+                            labelGroup.insert('rect', 'text')
+                                .attr('class', 'node-thread-label-rect')
+                                .attr('x', bbox.x - 4)
+                                .attr('y', bbox.y - 1)
+                                .attr('width', bbox.width + 8)
+                                .attr('height', bbox.height + 2);
+                        }
+                    });
+                });
 
                 // Thread Count Badge (if > 1)
                 const badges = nodes.filter(d => d.data.threadIds && d.data.threadIds.length > 1);
