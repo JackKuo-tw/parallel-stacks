@@ -1,0 +1,141 @@
+import * as vscode from 'vscode';
+import { outputChannel } from './extension';
+
+export interface StackFrame {
+    id: number;
+    name: string;
+    source?: any;
+    line: number;
+    column: number;
+    threadIds: number[];
+}
+
+export interface GraphNode {
+    id: string; // Unique ID for the node
+    frame: StackFrame;
+    children: GraphNode[];
+    threadIds: number[]; // Threads that pass through this node
+    // For rendering
+    x?: number;
+    y?: number;
+}
+
+export interface ThreadData {
+    id: number;
+    name: string;
+    frames: any[];
+}
+
+export async function getStackGraph(session: vscode.DebugSession): Promise<GraphNode[]> {
+    outputChannel.appendLine(`getStackGraph called for session: ${session.name} (${session.type})`);
+
+    // Check if session type is supported (optional, but good for debugging)
+    if (session.type !== 'cppdbg' && session.type !== 'cppvsdbg' && session.type !== 'mock') {
+        outputChannel.appendLine(`Warning: Session type '${session.type}' might not be supported.`);
+    }
+
+    try {
+        const threadsResponse = await session.customRequest('threads');
+        outputChannel.appendLine(`Threads response: ${JSON.stringify(threadsResponse)}`);
+
+        if (!threadsResponse || !threadsResponse.threads) {
+            throw new Error("Invalid threads response: " + JSON.stringify(threadsResponse));
+        }
+
+        const threads = threadsResponse.threads;
+        if (threads.length === 0) {
+            outputChannel.appendLine('No threads found');
+            return [];
+        }
+
+        const threadDataPromises = threads.map(async (thread: any) => {
+            try {
+                // For some debug adapters, we need to be careful with arguments
+                // levels: 0 might be interpreted as "return 0 frames" by some adapters (e.g. cppvsdbg)
+                // Use a reasonably high number instead.
+                const stackTraceResponse = await session.customRequest('stackTrace', { threadId: thread.id, startFrame: 0, levels: 1000 });
+                outputChannel.appendLine(`Stack trace for thread ${thread.id}: ${JSON.stringify(stackTraceResponse)}`);
+
+                if (!stackTraceResponse || !stackTraceResponse.stackFrames) {
+                    outputChannel.appendLine(`Thread ${thread.id} has no stack frames`);
+                    return { id: thread.id, name: thread.name, frames: [] };
+                }
+
+                // Reverse to process from root (bottom of stack) to top (leaf)
+                return {
+                    id: thread.id,
+                    name: thread.name,
+                    frames: stackTraceResponse.stackFrames.reverse()
+                };
+            } catch (e: any) {
+                outputChannel.appendLine(`Failed to get stack trace for thread ${thread.id}: ${e.message}`);
+                return {
+                    id: thread.id,
+                    name: thread.name,
+                    frames: []
+                };
+            }
+        });
+
+        const threadsData: ThreadData[] = await Promise.all(threadDataPromises);
+        const graph = buildGraph(threadsData);
+        outputChannel.appendLine(`Built graph with ${graph.length} root nodes`);
+        return graph;
+    } catch (e: any) {
+        outputChannel.appendLine(`Failed to get threads: ${e.message}`);
+        throw e; // Rethrow so UI shows the error
+    }
+}
+
+export function buildGraph(threadsData: ThreadData[]): GraphNode[] {
+    const rootNodes: GraphNode[] = [];
+
+    for (const thread of threadsData) {
+        let currentLevelNodes = rootNodes;
+
+        for (const frame of thread.frames) {
+            // Find if this frame already exists at current level
+            let node = currentLevelNodes.find(n => isSameFrame(n.frame, frame));
+
+            if (!node) {
+                node = {
+                    id: `${frame.source?.path}:${frame.line}:${frame.column}:${frame.name}`,
+                    frame: {
+                        id: frame.id,
+                        name: frame.name,
+                        source: frame.source,
+                        line: frame.line,
+                        column: frame.column,
+                        threadIds: []
+                    },
+                    children: [],
+                    threadIds: []
+                };
+                currentLevelNodes.push(node);
+            }
+
+            // Add thread ID to node
+            if (!node.threadIds.includes(thread.id)) {
+                node.threadIds.push(thread.id);
+            }
+            if (!node.frame.threadIds.includes(thread.id)) {
+                node.frame.threadIds.push(thread.id);
+            }
+
+            // Move to next level
+            currentLevelNodes = node.children;
+        }
+    }
+
+    return rootNodes;
+}
+
+function isSameFrame(f1: StackFrame, f2: any): boolean {
+    // Basic equality check.
+    // In C++, name might be same but overloads?
+    // Ideally use source file + line + column + name
+    return f1.name === f2.name &&
+        f1.line === f2.line &&
+        f1.column === f2.column &&
+        (f1.source?.path === f2.source?.path);
+}
