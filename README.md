@@ -2,7 +2,7 @@
 
 **Parallel Stacks** is a Visual Studio Code extension that visualizes call stacks from multiple threads in a single, merged graph view. It is inspired by the "Parallel Stacks" window in Visual Studio, serving as a powerful tool for debugging multi-threaded C/C++ applications.
 
-![Parallel Stacks Overview](resources/icon.png)
+![Parallel Stacks Demo](resources/demo_with_logo.png)
 
 ## 🛠 Usage
 
@@ -39,7 +39,7 @@ For developers looking to contribute or build from source:
 
 1. Clone and install:
    ```bash
-   git clone https://github.com/JackKuo-tw/parallel-stack.git
+   git clone https://github.com/JackKuo-tw/parallel-stacks.git
    npm install
    ```
 2. Build:

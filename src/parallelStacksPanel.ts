@@ -474,11 +474,10 @@ export class ParallelStacksPanel {
                     })
                     .on("mouseover", function(event, d) {
                         // Highlight path to root
-                        const path = d.ancestors();
-                        const pathIds = path.map(n => n.data.id);
+                        const pathSet = new Set(d.ancestors());
 
-                        nodes.classed('highlighted', n => pathIds.includes(n.data.id));
-                        linkSelection.classed('highlighted', l => pathIds.includes(l.target.data.id));
+                        nodes.classed('highlighted', n => pathSet.has(n));
+                        linkSelection.classed('highlighted', l => pathSet.has(l.target));
                     })
                     .on("mouseout", function() {
                         nodes.classed('highlighted', false);
