@@ -12,7 +12,7 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [18.x, 20.x]
+        node-version: [24.x]
 
     steps:
     - uses: actions/checkout@v4
@@ -28,3 +28,14 @@ jobs:
 
     - name: Run Compile (Build, Lint, Typecheck)
       run: npm run compile
+
+    - name: Package Extension
+      run: npx @vscode/vsce package --no-git-tag-version
+
+    - name: Upload VSIX Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: parallel-stacks-vsix
+        path: "*.vsix"
+        if-no-files-found: error
+        retention-days: 7
