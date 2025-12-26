@@ -96,10 +96,7 @@ export class ParallelStacksPanel {
             const uri = vscode.Uri.file(source.path);
             const doc = await vscode.workspace.openTextDocument(uri);
             const editor = await vscode.window.showTextDocument(doc);
-            const pos = new vscode.Position(line - 1, column - 1); // standard is 1-based, API is 0-based?
-            // DAP 'line' is 1-based usually. VS Code API Position is 0-based.
-            // StackFrame interface has 1-based line?
-            // DAP spec says 1-based.
+            const pos = new vscode.Position(line - 1, column - 1);
             editor.selection = new vscode.Selection(pos, pos);
             editor.revealRange(new vscode.Range(pos, pos));
         } catch (e: any) {
@@ -118,29 +115,87 @@ export class ParallelStacksPanel {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https:; script-src 'unsafe-inline' https:;">
         <title>Parallel Stacks</title>
         <script src="https://d3js.org/d3.v7.min.js"></script>
         <style>
-            body { font-family: sans-serif; padding: 10px; background-color: var(--vscode-editor-background); color: var(--vscode-editor-foreground); }
-            .error { color: var(--vscode-errorForeground); }
-            #graph { width: 100%; height: 600px; border: 1px solid var(--vscode-widget-border); overflow: auto; }
-            .node rect { fill: var(--vscode-editor-background); stroke: var(--vscode-foreground); stroke-width: 1.5px; }
-            .node text { font: 12px sans-serif; fill: var(--vscode-editor-foreground); }
-            .link { fill: none; stroke: var(--vscode-foreground); stroke-opacity: 0.4; stroke-width: 1.5px; }
+            body {
+                font-family: var(--vscode-font-family);
+                font-size: var(--vscode-font-size);
+                padding: 0;
+                margin: 0;
+                background-color: var(--vscode-editor-background);
+                color: var(--vscode-editor-foreground);
+                overflow: hidden;
+            }
+            .error { color: var(--vscode-errorForeground); padding: 20px; }
+            .error:empty { padding: 0; }
+            #graph { width: 100vw; height: 100vh; overflow: visible; }
+
+            /* Nodes */
+            .node rect {
+                fill: var(--vscode-sideBar-background);
+                stroke: var(--vscode-widget-border);
+                stroke-width: 1px;
+                rx: 4px; /* Rounded corners */
+            }
+            .node:hover rect {
+                stroke: var(--vscode-focusBorder);
+                stroke-width: 2px;
+            }
+            .node text.name {
+                font-weight: bold;
+                fill: var(--vscode-editor-foreground);
+                pointer-events: none;
+            }
+            .node text.details {
+                font-size: 0.9em;
+                fill: var(--vscode-descriptionForeground);
+                pointer-events: none;
+            }
+            .node-thread-count {
+                font-size: 0.8em;
+                fill: var(--vscode-badge-foreground);
+            }
+            .node-thread-badge {
+                fill: var(--vscode-badge-background);
+            }
+
+            /* Links */
+            .link {
+                fill: none;
+                stroke: var(--vscode-editor-foreground);
+                stroke-opacity: 0.2;
+                stroke-width: 2px;
+            }
 
             /* Tooltip */
-            .tooltip { position: absolute; text-align: center; padding: 5px; font: 12px sans-serif; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); pointer-events: none; opacity: 0; }
+            .tooltip {
+                position: absolute;
+                text-align: left;
+                padding: 8px;
+                font-size: 12px;
+                background: var(--vscode-editor-hoverHighlightBackground);
+                border: 1px solid var(--vscode-widget-border);
+                border-radius: 4px;
+                pointer-events: none;
+                opacity: 0;
+                box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+                color: var(--vscode-editor-foreground);
+                z-index: 10;
+            }
         </style>
     </head>
     <body>
-        <button id="refresh">Refresh</button>
         <div id="error" class="error"></div>
         <div id="graph"></div>
         <div class="tooltip" id="tooltip"></div>
         <script>
             const vscode = acquireVsCodeApi();
-            document.getElementById('refresh').addEventListener('click', () => {
-                vscode.postMessage({ command: 'refresh' });
+
+            // Handle window resize
+            window.addEventListener('resize', () => {
+                 if (lastData) renderGraph(lastData);
             });
 
             window.addEventListener('message', event => {
@@ -150,6 +205,7 @@ export class ParallelStacksPanel {
                 switch (message.command) {
                     case 'updateGraph':
                         errorDiv.textContent = '';
+                        lastData = message.data;
                         renderGraph(message.data);
                         break;
                     case 'error':
@@ -158,17 +214,27 @@ export class ParallelStacksPanel {
                 }
             });
 
+            let lastData = null;
+
             function renderGraph(data) {
                 const container = document.getElementById('graph');
-                container.innerHTML = '';
 
-                if (!data || data.length === 0) {
-                    container.textContent = 'No stack data available.';
+                // Fix rendering lag on tab switch (0 size)
+                const width = container.clientWidth;
+                const height = container.clientHeight;
+                if (width === 0 || height === 0) {
+                    requestAnimationFrame(() => renderGraph(data));
                     return;
                 }
 
-                // data is an array of root nodes (GraphNode[])
-                // We create a dummy root to hold them all for D3 tree
+                container.innerHTML = '';
+
+                if (!data || data.length === 0) {
+                    container.innerHTML = '<div style="padding: 20px;">No stack data available. Start a debug session.</div>';
+                    return;
+                }
+
+                // Prepare data for D3
                 const rootData = {
                     id: 'root',
                     frame: { name: 'Root', line: 0, column: 0 },
@@ -176,52 +242,112 @@ export class ParallelStacksPanel {
                     threadIds: []
                 };
 
-                const width = container.clientWidth || 800;
-                const height = container.clientHeight || 600;
-
-                // Margin
-                const margin = {top: 20, right: 90, bottom: 30, left: 90};
-                const innerWidth = width - margin.left - margin.right;
-                const innerHeight = height - margin.top - margin.bottom;
-
-                const svg = d3.select("#graph").append("svg")
-                    .attr("width", width)
-                    .attr("height", height);
-
-                const g = svg.append("g")
-                    .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
-
-                // Zoom
-                const zoom = d3.zoom()
-                    .scaleExtent([0.1, 10])
-                    .on('zoom', (event) => {
-                        g.attr('transform', event.transform);
-                    });
-                svg.call(zoom);
-
                 const root = d3.hierarchy(rootData);
 
-                const treeLayout = d3.tree().size([innerWidth, innerHeight]);
+                // Calculate dynamic node width based on longest name
+                let maxNameLen = 0;
+                root.descendants().forEach(d => {
+                   if (d.data.id !== 'root' && d.data.frame && d.data.frame.name) {
+                       maxNameLen = Math.max(maxNameLen, d.data.frame.name.length);
+                   }
+                });
+
+                // Estimate: 8px per char + padding
+                const minNodeWidth = 200;
+                const nodeWidth = Math.max(minNodeWidth, maxNameLen * 8 + 40);
+                const nodeHeight = 60;
+                const horizontalSpacing = 40;
+                const verticalSpacing = 80;
+
+                const treeLayout = d3.tree()
+                    .nodeSize([nodeWidth + horizontalSpacing, nodeHeight + verticalSpacing]);
+
                 treeLayout(root);
 
-                // Links
+                // Define zoom behavior
+                const zoom = d3.zoom()
+                    .on("zoom", (event) => {
+                       g.attr("transform", event.transform);
+                    });
+
+                // Create SVG
+                const svgSelection = d3.select("#graph").append("svg")
+                    .attr("width", width)
+                    .attr("height", height)
+                    .call(zoom)
+                    .on("dblclick.zoom", null); // Enable standard zoom, disable double-click zoom
+
+                const g = svgSelection.append("g");
+
+                // Calculate bounds to center the tree initially
+                let x0 = Infinity;
+                let x1 = -Infinity;
+                let y0 = Infinity;
+                let y1 = -Infinity;
+                root.each(d => {
+                    // Ignore root for bounding box if we hide it
+                    if (d.data.id === 'root') return;
+                    if (d.x < x0) x0 = d.x;
+                    if (d.x > x1) x1 = d.x;
+                    if (d.y < y0) y0 = d.y;
+                    if (d.y > y1) y1 = d.y;
+                });
+
+                if (x0 === Infinity) { // Fallback if only root
+                     x0 = 0; x1 = 0; y0 = 0; y1 = 0;
+                }
+
+                // Bottom-Up Transformation
+
+                const graphWidth = x1 - x0 + nodeWidth;
+                const graphHeight = y1 - y0 + nodeHeight;
+
+                const initialScale = Math.min(
+                    1,
+                    (width - 100) / graphWidth,
+                    (height - 100) / graphHeight
+                );
+
+                const centerX = (x0 + x1) / 2;
+                const centerY = (y0 + y1) / 2; // Center of the visual tree (excluding root)
+
+                const initialTranslateX = (width / 2) - (centerX * initialScale);
+                const initialTranslateY = (height / 2) - (-centerY * initialScale);
+
+                // Apply initial zoom
+                svgSelection.call(zoom.transform,
+                    d3.zoomIdentity.translate(initialTranslateX, initialTranslateY).scale(initialScale)
+                );
+
+                // Filter out link to virtual root
+                const links = root.links().filter(d => d.source.data.id !== 'root');
+
+                // Draw Links
                 g.selectAll('path.link')
-                    .data(root.links())
+                    .data(links)
                     .enter().append('path')
                     .attr('class', 'link')
-                    .attr('d', d3.linkVertical()
-                        .x(d => d.x)
-                        .y(d => d.y));
+                    .attr('d', d => {
+                        const sx = d.source.x;
+                        const sy = -d.source.y;
+                        const tx = d.target.x;
+                        const ty = -d.target.y;
 
-                // Nodes
+                        return 'M' + sx + ',' + sy + 'C' + sx + ',' + ((sy + ty) / 2) + ' ' + tx + ',' + ((sy + ty) / 2) + ' ' + tx + ',' + ty;
+                    });
+
+                // Filter out virtual root node
+                const nodesData = root.descendants().filter(d => d.data.id !== 'root');
+
+                // Draw Nodes
                 const nodes = g.selectAll('g.node')
-                    .data(root.descendants())
+                    .data(nodesData)
                     .enter().append('g')
                     .attr('class', 'node')
-                    .attr('transform', d => "translate(" + d.x + "," + d.y + ")")
+                    .attr('transform', d => 'translate(' + d.x + ',' + (-d.y) + ')')
                     .style("cursor", "pointer")
                     .on("click", (event, d) => {
-                         if (d.data.id !== 'root' && d.data.frame) {
+                         if (d.data.frame) {
                              vscode.postMessage({
                                  command: 'openFile',
                                  source: d.data.frame.source,
@@ -229,27 +355,50 @@ export class ParallelStacksPanel {
                                  column: d.data.frame.column
                              });
                          }
-                    })
-                    .on("mouseover", (event, d) => {
-                        const tooltip = d3.select("#tooltip");
-                        tooltip.transition().duration(200).style("opacity", .9);
-                        tooltip.html(d.data.frame.name)
-                            .style("left", (event.pageX) + "px")
-                            .style("top", (event.pageY - 28) + "px");
-                    })
-                    .on("mouseout", (d) => {
-                        d3.select("#tooltip").transition().duration(500).style("opacity", 0);
                     });
 
-                nodes.append('circle')
-                    .attr('r', 5)
-                    .style('fill', d => d.data.id === 'root' ? 'none' : '#69b3a2');
+                // Node Rect/Card
+                nodes.append('rect')
+                    .attr('x', -nodeWidth / 2)
+                    .attr('y', -nodeHeight / 2)
+                    .attr('width', nodeWidth)
+                    .attr('height', nodeHeight)
+                    .attr('rx', 5);
 
+                // Text: Function Name (truncated if long - though we resized to fit)
                 nodes.append('text')
-                    .attr("dy", ".35em")
-                    .attr("x", d => d.children ? -13 : 13)
-                    .style("text-anchor", d => d.children ? "end" : "start")
-                    .text(d => d.data.id === 'root' ? '' : (d.data.frame.name + ((d.data.threadIds && d.data.threadIds.length > 0) ? ' (' + d.data.threadIds.length + ')' : '')));
+                    .attr('class', 'name')
+                    .attr('dy', '-0.5em')
+                    .attr('text-anchor', 'middle')
+                    .text(d => d.data.frame.name);
+
+                // Text: Source/Line
+                nodes.append('text')
+                    .attr('class', 'details')
+                    .attr('dy', '1.2em')
+                    .attr('text-anchor', 'middle')
+                    .text(d => {
+                         const src = d.data.frame.source ? d.data.frame.source.name : '';
+                         const line = d.data.frame.line > 0 ? ':' + d.data.frame.line : '';
+                         return src + line;
+                    });
+
+                // Thread Count Badge (if > 1)
+                const badges = nodes.filter(d => d.data.threadIds && d.data.threadIds.length > 1);
+
+                badges.append('circle')
+                    .attr('class', 'node-thread-badge')
+                    .attr('cx', nodeWidth/2)
+                    .attr('cy', -nodeHeight/2)
+                    .attr('r', 12);
+
+                badges.append('text')
+                    .attr('class', 'node-thread-count')
+                    .attr('cx', nodeWidth/2)
+                    .attr('cy', -nodeHeight/2)
+                    .attr('dy', '0.35em')
+                    .attr('text-anchor', 'middle')
+                    .text(d => d.data.threadIds.length);
             }
 
             // Initial refresh
