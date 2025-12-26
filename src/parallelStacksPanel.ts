@@ -87,7 +87,21 @@ export class ParallelStacksPanel {
         }
         try {
             const graphData = await getStackGraph(session, splitNodes);
-            this._panel.webview.postMessage({ command: 'updateGraph', data: graphData });
+
+            // Get currently focused thread
+            const activeStackItem = vscode.debug.activeStackItem;
+            let currentThreadId: number | undefined;
+            if (activeStackItem instanceof vscode.DebugThread) {
+                currentThreadId = activeStackItem.threadId;
+            } else if (activeStackItem instanceof vscode.DebugStackFrame) {
+                currentThreadId = activeStackItem.threadId;
+            }
+
+            this._panel.webview.postMessage({
+                command: 'updateGraph',
+                data: graphData,
+                currentThreadId: currentThreadId
+            });
         } catch (e: any) {
             this._panel.webview.postMessage({ command: 'error', text: e.message });
         }
@@ -162,6 +176,19 @@ export class ParallelStacksPanel {
                 stroke-width: 3px;
                 fill: var(--vscode-editor-hoverHighlightBackground);
             }
+            .node.highlighted rect {
+                stroke: var(--vscode-focusBorder);
+                stroke-width: 2.5px;
+            }
+            .node.current-thread rect {
+                stroke: #007acc4d;
+                stroke-width: 2.5px;
+            }
+            .node.current-thread.highlighted rect {
+                stroke: #007acc;
+                stroke-width: 3.5px;
+                filter: brightness(1.2);
+            }
             .node text.name {
                 font-weight: bold;
                 fill: var(--vscode-editor-foreground);
@@ -202,6 +229,11 @@ export class ParallelStacksPanel {
                 stroke: var(--vscode-editor-foreground);
                 stroke-opacity: 0.2;
                 stroke-width: 2px;
+            }
+            .link.highlighted {
+                stroke-opacity: 0.8;
+                stroke-width: 3px;
+                stroke: var(--vscode-focusBorder);
             }
 
             /* Tooltip */
@@ -244,6 +276,7 @@ export class ParallelStacksPanel {
             // State
             let splitNodeIds = [];
             let selectedNodeId = null;
+            let currentThreadId = null;
 
             // Handle window resize
             window.addEventListener('resize', () => {
@@ -258,6 +291,7 @@ export class ParallelStacksPanel {
                     case 'updateGraph':
                         errorDiv.textContent = '';
                         lastData = message.data;
+                        currentThreadId = message.currentThreadId;
                         renderGraph(message.data);
                         break;
                     case 'error':
@@ -399,7 +433,7 @@ export class ParallelStacksPanel {
                 const links = root.links().filter(d => d.source.data.id !== 'root');
 
                 // Draw Links
-                g.selectAll('path.link')
+                const linkSelection = g.selectAll('path.link')
                     .data(links)
                     .enter().append('path')
                     .attr('class', 'link')
@@ -423,6 +457,7 @@ export class ParallelStacksPanel {
                     .attr('transform', d => 'translate(' + d.x + ',' + (-d.y) + ')')
                     .style("cursor", "pointer")
                     .classed('selected', d => d.data.id === selectedNodeId)
+                    .classed('current-thread', d => currentThreadId !== null && d.data.threadIds.includes(currentThreadId))
                     .on("click", function(event, d) {
                          selectedNodeId = d.data.id;
                          nodes.classed('selected', false);
@@ -438,7 +473,16 @@ export class ParallelStacksPanel {
                          }
                     })
                     .on("mouseover", function(event, d) {
-                        // Node hover logic if needed, currently on badge
+                        // Highlight path to root
+                        const path = d.ancestors();
+                        const pathIds = path.map(n => n.data.id);
+
+                        nodes.classed('highlighted', n => pathIds.includes(n.data.id));
+                        linkSelection.classed('highlighted', l => pathIds.includes(l.target.data.id));
+                    })
+                    .on("mouseout", function() {
+                        nodes.classed('highlighted', false);
+                        linkSelection.classed('highlighted', false);
                     });
 
                 // Node Rect/Card
@@ -531,6 +575,7 @@ export class ParallelStacksPanel {
                         const yOffset = -i * 15;
                         const text = labelGroup.append('text')
                             .attr('class', 'node-thread-label-text')
+                            .classed('current-thread', d.data.threadIds[i] === currentThreadId)
                             .attr('text-anchor', 'middle')
                             .attr('y', yOffset)
                             .text(txt);
@@ -541,6 +586,7 @@ export class ParallelStacksPanel {
                             const bbox = node.getBBox();
                             labelGroup.insert('rect', 'text')
                                 .attr('class', 'node-thread-label-rect')
+                                .classed('current-thread', d.data.threadIds[i] === currentThreadId)
                                 .attr('x', bbox.x - 4)
                                 .attr('y', bbox.y - 1)
                                 .attr('width', bbox.width + 8)
