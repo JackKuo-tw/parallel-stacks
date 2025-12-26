@@ -40,7 +40,6 @@ export class ParallelStacksPanel {
         this._update();
 
         // Listen for when the panel is disposed
-        // This happens when the user closes the panel or when the panel is closed programmatically
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
         // Handle messages from the webview
@@ -48,7 +47,7 @@ export class ParallelStacksPanel {
             async message => {
                 switch (message.command) {
                     case 'refresh':
-                        await this._updateGraph();
+                        await this._updateGraph(message.splitNodes || []);
                         return;
                     case 'openFile':
                         await this._openFile(message.source, message.line, message.column);
@@ -62,10 +61,7 @@ export class ParallelStacksPanel {
 
     public dispose() {
         ParallelStacksPanel.currentPanel = undefined;
-
-        // Clean up our resources
         this._panel.dispose();
-
         while (this._disposables.length) {
             const x = this._disposables.pop();
             if (x) {
@@ -74,14 +70,14 @@ export class ParallelStacksPanel {
         }
     }
 
-    private async _updateGraph() {
+    private async _updateGraph(splitNodes: string[] = []) {
         const session = vscode.debug.activeDebugSession;
         if (!session) {
             this._panel.webview.postMessage({ command: 'error', text: 'No active debug session' });
             return;
         }
         try {
-            const graphData = await getStackGraph(session);
+            const graphData = await getStackGraph(session, splitNodes);
             this._panel.webview.postMessage({ command: 'updateGraph', data: graphData });
         } catch (e: any) {
             this._panel.webview.postMessage({ command: 'error', text: e.message });
@@ -159,6 +155,12 @@ export class ParallelStacksPanel {
             }
             .node-thread-badge {
                 fill: var(--vscode-badge-background);
+                pointer-events: all;
+                cursor: pointer;
+            }
+            .node-thread-badge:hover {
+                stroke: var(--vscode-focusBorder);
+                stroke-width: 2px;
             }
 
             /* Links */
@@ -173,16 +175,29 @@ export class ParallelStacksPanel {
             .tooltip {
                 position: absolute;
                 text-align: left;
-                padding: 8px;
+                padding: 10px;
                 font-size: 12px;
                 background: var(--vscode-editor-hoverHighlightBackground);
                 border: 1px solid var(--vscode-widget-border);
                 border-radius: 4px;
-                pointer-events: none;
+                pointer-events: auto;
                 opacity: 0;
                 box-shadow: 0 4px 8px rgba(0,0,0,0.2);
                 color: var(--vscode-editor-foreground);
-                z-index: 10;
+                z-index: 100;
+                transition: opacity 0.2s;
+            }
+            .tooltip button {
+                margin-top: 8px;
+                padding: 4px 8px;
+                background: var(--vscode-button-background);
+                color: var(--vscode-button-foreground);
+                border: none;
+                border-radius: 2px;
+                cursor: pointer;
+            }
+            .tooltip button:hover {
+                background: var(--vscode-button-hoverBackground);
             }
         </style>
     </head>
@@ -192,6 +207,9 @@ export class ParallelStacksPanel {
         <div class="tooltip" id="tooltip"></div>
         <script>
             const vscode = acquireVsCodeApi();
+
+            // State
+            let splitNodeIds = [];
 
             // Handle window resize
             window.addEventListener('resize', () => {
@@ -244,7 +262,7 @@ export class ParallelStacksPanel {
 
                 const root = d3.hierarchy(rootData);
 
-                // Calculate dynamic node width based on longest name
+                // Calculate dynamic node width based on longest name, BUT cap it
                 let maxNameLen = 0;
                 root.descendants().forEach(d => {
                    if (d.data.id !== 'root' && d.data.frame && d.data.frame.name) {
@@ -252,22 +270,46 @@ export class ParallelStacksPanel {
                    }
                 });
 
-                // Estimate: 8px per char + padding
-                const minNodeWidth = 200;
-                const nodeWidth = Math.max(minNodeWidth, maxNameLen * 8 + 40);
+                // Estimate: 7px per char + padding
+                const minNodeWidth = 100;
+                // Cap the maximum width to keep branches close
+                const maxAllowedWidth = 250;
+                let calculatedWidth = maxNameLen * 7 + 15;
+                if (calculatedWidth > maxAllowedWidth) calculatedWidth = maxAllowedWidth;
+
+                const nodeWidth = Math.max(minNodeWidth, calculatedWidth);
                 const nodeHeight = 60;
-                const horizontalSpacing = 40;
-                const verticalSpacing = 80;
+                const horizontalSpacing = 10;
+                const verticalSpacing = 15;
 
                 const treeLayout = d3.tree()
-                    .nodeSize([nodeWidth + horizontalSpacing, nodeHeight + verticalSpacing]);
+                    .nodeSize([nodeWidth + horizontalSpacing, nodeHeight + verticalSpacing])
+                    .separation((a, b) => {
+                        // Aggressively reduce separation.
+                        // Default is 1 for siblings, 2 for non-siblings.
+                        // We want distinct branches to be almost touching.
+                        return a.parent === b.parent ? 1 : 1.05;
+                    });
 
                 treeLayout(root);
+
+                // Custom Y-positioning: Compact for linear stacks, Original for branches
+                root.each(d => {
+                    if (!d.parent) {
+                        d.y = 0;
+                    } else {
+                        // Check if the PARENT was a branch point
+                        const isBranch = d.parent.children.length > 1;
+                        const step = isBranch ? 140 : 70;
+                        d.y = d.parent.y + step;
+                    }
+                });
 
                 // Define zoom behavior
                 const zoom = d3.zoom()
                     .on("zoom", (event) => {
                        g.attr("transform", event.transform);
+                       d3.select('#tooltip').style('opacity', 0);
                     });
 
                 // Create SVG
@@ -355,6 +397,9 @@ export class ParallelStacksPanel {
                                  column: d.data.frame.column
                              });
                          }
+                    })
+                    .on("mouseover", function(event, d) {
+                        // Node hover logic if needed, currently on badge
                     });
 
                 // Node Rect/Card
@@ -365,22 +410,66 @@ export class ParallelStacksPanel {
                     .attr('height', nodeHeight)
                     .attr('rx', 5);
 
-                // Text: Function Name (truncated if long - though we resized to fit)
+                // Text: Function Name (truncated)
+                // Text: Function Name (truncated)
                 nodes.append('text')
                     .attr('class', 'name')
                     .attr('dy', '-0.5em')
                     .attr('text-anchor', 'middle')
-                    .text(d => d.data.frame.name);
+                    .text(d => {
+                        let name = d.data.frame.name;
 
-                // Text: Source/Line
+                        // Parse "Module!Function Line X" -> "Function"
+                        const bangIndex = name.indexOf('!');
+                        if (bangIndex !== -1) {
+                            name = name.substring(bangIndex + 1);
+                        }
+                        // Strip trailing " Line X" if present, as it's redundant
+                        const lineIndex = name.lastIndexOf(' Line ');
+                        if (lineIndex !== -1) {
+                            name = name.substring(0, lineIndex);
+                        }
+
+                        // Truncation
+                        const maxChars = Math.floor((nodeWidth - 10) / 7);
+                        if (name.length > maxChars) {
+                            return name.substring(0, maxChars - 3) + '...';
+                        }
+                        return name;
+                    });
+
+                // Text: Source/Line or Module
                 nodes.append('text')
                     .attr('class', 'details')
                     .attr('dy', '1.2em')
                     .attr('text-anchor', 'middle')
                     .text(d => {
+                         const rawName = d.data.frame.name;
+                         let moduleName = '';
+                         const bangIndex = rawName.indexOf('!');
+                         if (bangIndex !== -1) {
+                             moduleName = rawName.substring(0, bangIndex);
+                         }
+
                          const src = d.data.frame.source ? d.data.frame.source.name : '';
                          const line = d.data.frame.line > 0 ? ' : ' + d.data.frame.line : '';
-                         return src + line;
+
+                         if (src) {
+                             if (moduleName) {
+                                 // "Module => Source : Line"
+                                 return moduleName + ' => ' + src + line;
+                             } else {
+                                 // "Source : Line"
+                                 return src + line;
+                             }
+                         } else {
+                             // No source, check for module
+                             if (moduleName) {
+                                 return moduleName;
+                             }
+                             // Fallback
+                             return '';
+                         }
                     });
 
                 // Thread Count Badge (if > 1)
@@ -390,7 +479,35 @@ export class ParallelStacksPanel {
                     .attr('class', 'node-thread-badge')
                     .attr('cx', nodeWidth/2)
                     .attr('cy', -nodeHeight/2)
-                    .attr('r', 12);
+                    .attr('r', 12)
+                    .style("pointer-events", "all")
+                    .on("mouseover", function(event, d) {
+                         event.stopPropagation();
+                         cancelHideTooltip();
+
+                         const isSplitNode = d.data.id.includes('::split::');
+
+                         let html = '';
+                         if (isSplitNode) {
+                             html = '<strong>Split Node</strong><br/>Thread: ' + d.data.threadIds.join(', ') + '<br/>';
+                             html += '<button id="merge-btn">Merge</button>';
+                         } else {
+                             html = '<strong>Threads: ' + d.data.threadIds.length + '</strong><br/>';
+                             html += '<div style="max-height: 100px; overflow-y: auto;">' + d.data.threadIds.join(', ') + '</div>';
+                             html += '<button id="split-btn">Split</button>';
+                         }
+
+                         showTooltip(html, event.pageX + 10, event.pageY - 10);
+
+                         if (isSplitNode) {
+                            const btn = document.getElementById('merge-btn');
+                            if(btn) btn.onclick = () => mergeNode(d.data.id);
+                         } else {
+                            const btn = document.getElementById('split-btn');
+                            if(btn) btn.onclick = () => splitNode(d.data.id);
+                         }
+                    })
+                    .on("mouseout", hideTooltipWithDelay);
 
                 badges.append('text')
                     .attr('class', 'node-thread-count')
@@ -401,8 +518,67 @@ export class ParallelStacksPanel {
                     .text(d => d.data.threadIds.length);
             }
 
+            // --- Global Helpers ---
+
+            let hideTimeout;
+
+            function showTooltip(html, x, y) {
+                if (hideTimeout) clearTimeout(hideTimeout);
+                const tooltip = d3.select("#tooltip");
+                tooltip.style("opacity", 1)
+                       .style("left", x + "px")
+                       .style("top", y + "px")
+                       .html(html);
+            }
+
+            function hideTooltipWithDelay() {
+                if (hideTimeout) clearTimeout(hideTimeout);
+                hideTimeout = setTimeout(() => {
+                    d3.select("#tooltip").style("opacity", 0);
+                }, 500);
+            }
+
+            function cancelHideTooltip() {
+                if (hideTimeout) clearTimeout(hideTimeout);
+            }
+
+            d3.select("#tooltip")
+                .on("mouseover", cancelHideTooltip)
+                .on("mouseout", hideTooltipWithDelay);
+
+            // Global mouseout to close tooltip triggers hide logic
+            document.addEventListener('mouseover', function(e) {
+                 const target = e.target;
+                 const onTooltip = target.closest('.tooltip');
+                 const onBadge = target.closest('.node-thread-badge');
+
+                 if (!onTooltip && !onBadge) {
+                     // rely on mouseout timeout
+                 }
+            });
+
+            // Interaction Functions
+            window.splitNode = function(nodeId) {
+                if (!splitNodeIds.includes(nodeId)) {
+                    splitNodeIds.push(nodeId);
+                    vscode.postMessage({ command: 'refresh', splitNodes: splitNodeIds });
+                }
+            };
+
+            window.mergeNode = function(nodeId) {
+                const parts = nodeId.split('::split::');
+                if (parts.length > 0) {
+                    const canonicalId = parts[0];
+                    const index = splitNodeIds.indexOf(canonicalId);
+                    if (index > -1) {
+                        splitNodeIds.splice(index, 1);
+                        vscode.postMessage({ command: 'refresh', splitNodes: splitNodeIds });
+                    }
+                }
+            };
+
             // Initial refresh
-            vscode.postMessage({ command: 'refresh' });
+            vscode.postMessage({ command: 'refresh', splitNodes: splitNodeIds });
         </script>
     </body>
     </html>`;

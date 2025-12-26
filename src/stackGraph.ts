@@ -26,7 +26,7 @@ export interface ThreadData {
     frames: any[];
 }
 
-export async function getStackGraph(session: vscode.DebugSession): Promise<GraphNode[]> {
+export async function getStackGraph(session: vscode.DebugSession, splitNodes: string[] = []): Promise<GraphNode[]> {
     outputChannel.appendLine(`getStackGraph called for session: ${session.name} (${session.type})`);
 
     // Check if session type is supported (optional, but good for debugging)
@@ -78,7 +78,7 @@ export async function getStackGraph(session: vscode.DebugSession): Promise<Graph
         });
 
         const threadsData: ThreadData[] = await Promise.all(threadDataPromises);
-        const graph = buildGraph(threadsData);
+        const graph = buildGraph(threadsData, splitNodes);
         outputChannel.appendLine(`Built graph with ${graph.length} root nodes`);
         return graph;
     } catch (e: any) {
@@ -87,19 +87,33 @@ export async function getStackGraph(session: vscode.DebugSession): Promise<Graph
     }
 }
 
-export function buildGraph(threadsData: ThreadData[]): GraphNode[] {
+export function buildGraph(threadsData: ThreadData[], splitNodes: string[] = []): GraphNode[] {
     const rootNodes: GraphNode[] = [];
 
     for (const thread of threadsData) {
         let currentLevelNodes = rootNodes;
 
         for (const frame of thread.frames) {
+            // Calculate Canonical ID for this frame (used for grouping)
+            const canonicalId = `${frame.source?.path}:${frame.line}:${frame.column}:${frame.name}`;
+
+            // Determine if this frame should be split (not grouped)
+            // If canonicalId is in splitNodes, we do NOT group.
+            const shouldSplit = splitNodes.includes(canonicalId);
+
             // Find if this frame already exists at current level
-            let node = currentLevelNodes.find(n => isSameFrame(n.frame, frame));
+            // If splitting, we only group if we find a node that is ALREADY specific to this thread (which won't happen here usually)
+            // Actually, if we split, we want a UNIQUE node for this thread.
+            // So we simply don't find a matching node if shouldSplit is true.
+            let node = shouldSplit ? undefined : currentLevelNodes.find(n => isSameFrame(n.frame, frame) && !n.id.includes('::split::'));
 
             if (!node) {
+                // Create new node
+                // If splitting, make ID unique by appending thread ID
+                const nodeId = shouldSplit ? `${canonicalId}::split::${thread.id}` : canonicalId;
+
                 node = {
-                    id: `${frame.source?.path}:${frame.line}:${frame.column}:${frame.name}`,
+                    id: nodeId,
                     frame: {
                         id: frame.id,
                         name: frame.name,
@@ -109,7 +123,7 @@ export function buildGraph(threadsData: ThreadData[]): GraphNode[] {
                         threadIds: []
                     },
                     children: [],
-                    threadIds: []
+                    threadIds: [] // Will add below
                 };
                 currentLevelNodes.push(node);
             }
@@ -132,8 +146,6 @@ export function buildGraph(threadsData: ThreadData[]): GraphNode[] {
 
 function isSameFrame(f1: StackFrame, f2: any): boolean {
     // Basic equality check.
-    // In C++, name might be same but overloads?
-    // Ideally use source file + line + column + name
     return f1.name === f2.name &&
         f1.line === f2.line &&
         f1.column === f2.column &&
