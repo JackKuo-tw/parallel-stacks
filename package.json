@@ -1,6 +1,6 @@
 {
-  "name": "parallel-stacks-graph",
-  "displayName": "Parallel Stacks",
+  "name": "parallel-stacks-view",
+  "displayName": "Parallel Stacks View",
   "description": "Show parallel stacks in a graph view for C/C++ debugging.",
   "version": "0.0.1",
   "publisher": "JackKuo",
