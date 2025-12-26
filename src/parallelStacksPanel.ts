@@ -6,6 +6,7 @@ export class ParallelStacksPanel {
     private readonly _panel: vscode.WebviewPanel;
     private readonly _extensionUri: vscode.Uri;
     private _disposables: vscode.Disposable[] = [];
+    private readonly _activeFrameDecoration: vscode.TextEditorDecorationType;
 
     public static createOrShow(extensionUri: vscode.Uri) {
         const column = vscode.window.activeTextEditor
@@ -35,6 +36,13 @@ export class ParallelStacksPanel {
     private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri) {
         this._panel = panel;
         this._extensionUri = extensionUri;
+
+        this._activeFrameDecoration = vscode.window.createTextEditorDecorationType({
+            isWholeLine: true,
+            backgroundColor: new vscode.ThemeColor('editor.stackFrameHighlightBackground'),
+            overviewRulerColor: new vscode.ThemeColor('editor.stackFrameHighlightBackground'),
+            overviewRulerLane: vscode.OverviewRulerLane.Full,
+        });
 
         // Set the webview's initial html content
         this._update();
@@ -68,6 +76,7 @@ export class ParallelStacksPanel {
                 x.dispose();
             }
         }
+        this._activeFrameDecoration.dispose();
     }
 
     private async _updateGraph(splitNodes: string[] = []) {
@@ -93,6 +102,15 @@ export class ParallelStacksPanel {
             const doc = await vscode.workspace.openTextDocument(uri);
             const editor = await vscode.window.showTextDocument(doc);
             const pos = new vscode.Position(line - 1, column - 1);
+
+            // Clear decorations from all visible editors to ensure only one highlight
+            vscode.window.visibleTextEditors.forEach(e => {
+                e.setDecorations(this._activeFrameDecoration, []);
+            });
+
+            // Apply decoration
+            editor.setDecorations(this._activeFrameDecoration, [new vscode.Range(pos, pos)]);
+
             editor.selection = new vscode.Selection(pos, pos);
             editor.revealRange(new vscode.Range(pos, pos));
         } catch (e: any) {
@@ -138,6 +156,11 @@ export class ParallelStacksPanel {
             .node:hover rect {
                 stroke: var(--vscode-focusBorder);
                 stroke-width: 2px;
+            }
+            .node.selected rect {
+                stroke: var(--vscode-debugIcon-stackFrameFocusedForeground);
+                stroke-width: 3px;
+                fill: var(--vscode-editor-hoverHighlightBackground);
             }
             .node text.name {
                 font-weight: bold;
@@ -210,6 +233,7 @@ export class ParallelStacksPanel {
 
             // State
             let splitNodeIds = [];
+            let selectedNodeId = null;
 
             // Handle window resize
             window.addEventListener('resize', () => {
@@ -388,7 +412,12 @@ export class ParallelStacksPanel {
                     .attr('class', 'node')
                     .attr('transform', d => 'translate(' + d.x + ',' + (-d.y) + ')')
                     .style("cursor", "pointer")
-                    .on("click", (event, d) => {
+                    .classed('selected', d => d.data.id === selectedNodeId)
+                    .on("click", function(event, d) {
+                         selectedNodeId = d.data.id;
+                         nodes.classed('selected', false);
+                         d3.select(this).classed('selected', true);
+
                          if (d.data.frame) {
                              vscode.postMessage({
                                  command: 'openFile',
